@@ -10,6 +10,11 @@ interface SavedSession {
   text: string;
 }
 
+const CUE_FOCUS_OPTIONS = [
+    "Safety", "Sequencing", "Technique", "Balance", "Insight", 
+    "Attention", "Initiation", "Motor Planning", "Problem Solving", "Quality of Mvmt"
+];
+
 // --- CONCISE NARRATIVE ENGINE ---
 
 const generateNarrative = (selections: SelectionUnit[], vitals: SessionVitals, cptMinutes: Record<string, string>, progress: ProgressType): string => {
@@ -25,7 +30,6 @@ const generateNarrative = (selections: SelectionUnit[], vitals: SessionVitals, c
   const physVitals = physParts.length > 0 ? `Baseline vitals: ${physParts.join(", ")}.` : "";
 
   // 2. CPT Grouping Logic
-  // We first group by CPT code to create distinct paragraphs per billing unit
   const cptGroups: Record<string, SelectionUnit[]> = {};
   selections.forEach(s => {
       if (!cptGroups[s.cpt]) cptGroups[s.cpt] = [];
@@ -62,32 +66,92 @@ const generateNarrative = (selections: SelectionUnit[], vitals: SessionVitals, c
         const assist = group.assist;
         
         // Map deficits
-        const deficitString = group.deficits.map(d => SKILLED_MAP[d] || d).join(" and ");
-        const finalDeficit = deficitString || "functional deficits";
+        const deficitList = group.deficits.map(d => SKILLED_MAP[d] || d);
+        let deficitString = "";
+        if (deficitList.length === 0) {
+            deficitString = "functional deficits";
+        } else if (deficitList.length === 1) {
+            deficitString = deficitList[0];
+        } else if (deficitList.length === 2) {
+             deficitString = `${deficitList[0]} and ${deficitList[1]}`;
+        } else {
+             deficitString = `${deficitList.slice(0, -1).join(", ")}, and ${deficitList.slice(-1)}`;
+        }
 
-        // Format Cues
-        let cueString = "";
+        // Add descriptor occasionally
+        const descriptor = NARRATIVE_VOCAB.descriptors[i % NARRATIVE_VOCAB.descriptors.length];
+        const qualifiedDeficit = (i % 2 === 0) ? `${descriptor} ${deficitString}` : deficitString;
+
+        // Connectors
+        const cause = NARRATIVE_VOCAB.connectors.cause[i % NARRATIVE_VOCAB.connectors.cause.length];
+        const effect = NARRATIVE_VOCAB.connectors.effect[i % NARRATIVE_VOCAB.connectors.effect.length];
+        const goal = NARRATIVE_VOCAB.connectors.goal[i % NARRATIVE_VOCAB.connectors.goal.length];
+
+        // Process Cues
+        let cueSegment = "";
         if (group.cues.length > 0) {
-            const formattedCues = group.cues.map(c => {
-                // Parse "Level Type (Focus)" -> "Min Verbal (Safety)"
+            const cuePhrases = group.cues.map(c => {
                 if (c.includes("(")) {
                     const parts = c.split(" (");
                     const main = parts[0]; 
-                    const focus = parts[1].replace(")", "").toLowerCase(); 
-                    return `${main} cues for ${focus}`;
+                    const rawFocus = parts[1].replace(")", ""); 
+                    const focusArray = rawFocus.split(", ");
+                    let focusText = "";
+                    if (focusArray.length === 1) {
+                        focusText = focusArray[0].toLowerCase();
+                    } else if (focusArray.length === 2) {
+                        focusText = `${focusArray[0].toLowerCase()} and ${focusArray[1].toLowerCase()}`;
+                    } else {
+                        const last = focusArray.pop();
+                        focusText = `${focusArray.join(", ").toLowerCase()}, and ${last?.toLowerCase()}`;
+                    }
+                    return `${main} cues for ${focusText}`;
                 }
                 return `${c} cues`;
             });
-            cueString = ` Requires ${formattedCues.join(", ")}.`;
+            cueSegment = cuePhrases.join("; ");
         }
 
-        const mode = i % 3;
-        if (mode === 0) {
-            return `Patient performed ${taskList} with ${assist} secondary to ${finalDeficit}.${cueString}`;
-        } else if (mode === 1) {
-            return `${taskList} completed with ${assist} due to ${finalDeficit}.${cueString}`;
-        } else {
-            return `Addressed ${finalDeficit} via ${taskList} with ${assist}.${cueString}`;
+        // Varied Sentence Generators
+        const pVerb = NARRATIVE_VOCAB.patient_verbs[i % NARRATIVE_VOCAB.patient_verbs.length];
+        const tVerb = NARRATIVE_VOCAB.therapist_verbs[i % NARRATIVE_VOCAB.therapist_verbs.length];
+        
+        // Helper to attach cues naturally
+        const attachCues = (base: string, style: 'comma' | 'separate' | 'necessitating') => {
+            if (!cueSegment) return base + ".";
+            if (style === 'comma') return `${base}, requiring ${cueSegment}.`;
+            if (style === 'necessitating') return `${base}, necessitating ${cueSegment}.`;
+            return `${base}. Required ${cueSegment}.`;
+        };
+
+        // 6 Different Sentence Structures for Flow
+        switch (i % 6) {
+            case 0:
+                // Standard: Patient [Verb] [Task] [Assist] [Cause] [Deficit]
+                return attachCues(`Patient ${pVerb} ${taskList} with ${assist} ${cause} ${qualifiedDeficit}`, 'comma');
+            
+            case 1:
+                // Therapist-First: [Therapist Verb] [Task] [Goal] [Deficit]
+                return attachCues(`${tVerb} ${taskList} ${goal} ${deficitString}; patient demonstrated ${assist} performance`, 'separate');
+            
+            case 2:
+                // Inverted Deficit: [Deficit] [Effect] [Assist]
+                return attachCues(`${qualifiedDeficit} ${effect} ${assist} during ${taskList}`, 'separate');
+            
+            case 3:
+                // Action-Result: [Task] completed with [Assist] due to [Deficit]
+                return attachCues(`${taskList} completed with ${assist} ${cause} ${qualifiedDeficit}`, 'necessitating');
+            
+            case 4:
+                // Intervention Focus: Intervention targeted [Deficit] via [Task]
+                return attachCues(`Intervention targeted ${deficitString} via ${taskList}, where patient required ${assist}`, 'comma');
+            
+            case 5:
+                // Navigation/Execution: Patient executed [Task]
+                return attachCues(`Patient executed ${taskList} with ${assist}, as ${qualifiedDeficit} limited independence`, 'separate');
+            
+            default:
+                return attachCues(`Patient performed ${taskList} with ${assist}`, 'comma');
         }
       });
 
@@ -95,32 +159,45 @@ const generateNarrative = (selections: SelectionUnit[], vitals: SessionVitals, c
   });
 
   // 3. Clinical Assessment (The "So What?" Factor)
-  // Calculate Mode Assist
-  const assistLevels = selections.map(s => s.assist);
+  
+  // Calculate Statistics
+  const allAssist = selections.map(s => s.assist);
   const assistCounts: Record<string, number> = {};
-  assistLevels.forEach(l => { assistCounts[l] = (assistCounts[l] || 0) + 1; });
-  const modeAssist = Object.keys(assistCounts).reduce((a, b) => assistCounts[a] > assistCounts[b] ? a : b);
+  allAssist.forEach(l => { assistCounts[l] = (assistCounts[l] || 0) + 1; });
+  const modeAssist = Object.keys(assistCounts).length ? Object.keys(assistCounts).reduce((a, b) => assistCounts[a] > assistCounts[b] ? a : b) : "N/A";
+
+  const allDeficits = selections.flatMap(s => s.deficits);
+  const deficitCounts: Record<string, number> = {};
+  allDeficits.forEach(d => { deficitCounts[d] = (deficitCounts[d] || 0) + 1; });
+  const topDeficitKey = Object.keys(deficitCounts).length ? Object.keys(deficitCounts).reduce((a, b) => deficitCounts[a] > deficitCounts[b] ? a : b) : null;
+  
+  const cleanDeficit = topDeficitKey ? (SKILLED_MAP[topDeficitKey] || topDeficitKey) : "functional deficits";
+  
+  const activityCounts: Record<string, number> = {};
+  selections.forEach(s => { activityCounts[s.activity] = (activityCounts[s.activity] || 0) + 1; });
+  const topActivityKey = Object.keys(activityCounts).length ? Object.keys(activityCounts).reduce((a, b) => activityCounts[a] > activityCounts[b] ? a : b) : "functional tasks";
+  const cleanActivity = topActivityKey.split(" (")[0];
 
   let assessment = "";
   
-  // Logic Branch: Trend -> Assist Level
+  // Logic Branch: Trend -> Assist Level -> Clinical Justification
   if (progress === 'Declined') {
-      assessment = `Assessment: Patient declined from baseline today secondary to increased fatigue and pain. Skilled intervention shifted to energy conservation and compensatory strategies to mitigate safety risks and prevent further decline.`;
+      assessment = `Assessment: Patient demonstrated a decline in ${cleanActivity} performance versus baseline, primarily exacerbated by ${cleanDeficit}. Session required pivot to safety instruction and compensatory strategies, with patient requiring ${modeAssist} to maintain safety.`;
   } else if (progress === 'Maintained') {
       if (['Dep', 'Max A', 'Mod A'].includes(modeAssist)) {
-          assessment = `Assessment: Patient maintained baseline. Continues to demonstrate significant safety deficits requiring skilled positioning and maximal assistance to prevent adverse events.`;
+          assessment = `Assessment: Functional status maintained during ${cleanActivity}. Patient continues to require ${modeAssist} secondary to ${cleanDeficit}, necessitating skilled intervention to prevent complications and ensure positioning.`;
       } else if (['Min A', 'CGA', 'SBA'].includes(modeAssist)) {
-          assessment = `Assessment: Patient maintained baseline. Requires continued skilled cues for sequencing and safety awareness to ensure functional carryover.`;
+          assessment = `Assessment: Patient maintained baseline during ${cleanActivity}. ${cleanDeficit} remains the primary limiting factor, requiring skilled cues to ensure carryover of techniques and prevent regression.`;
       } else {
-          assessment = `Assessment: Patient maintained baseline functional status. Focus remains on consistency and building endurance for community reintegration.`;
+          assessment = `Assessment: Patient maintained baseline functional status in ${cleanActivity}. Focus remains on consistency and building endurance to mitigate ${cleanDeficit}.`;
       }
   } else { // Improved
       if (['Min A', 'CGA', 'SBA'].includes(modeAssist)) {
-          assessment = `Assessment: Patient improved from baseline, demonstrating increased carryover of safety techniques. Focus remains on advancing toward independence and reducing reliance on verbal cues.`;
+          assessment = `Assessment: Patient displayed improved functional tolerance during ${cleanActivity}. Reduced impact of ${cleanDeficit} allowed for greater independence, though ${modeAssist} remains indicated to ensure safety.`;
       } else if (modeAssist === 'Mod I' || modeAssist === 'Indep') {
-           assessment = `Assessment: Patient improved from baseline. Demonstrating improved functional capacity; focus remains on refinement, speed, and advanced safety in novel environments.`;
+           assessment = `Assessment: Patient improved from baseline in ${cleanActivity}, demonstrating increased efficiency. Focus remains on refining mechanics and generalizing skills to novel environments to fully address ${cleanDeficit}.`;
       } else {
-           assessment = `Assessment: Patient improved from baseline participation. Continues to require physical assistance but demonstrating improved motor planning during key tasks.`;
+           assessment = `Assessment: Patient improved participation in ${cleanActivity}. While ${modeAssist} is still required, patient demonstrated improved motor planning and effort, specifically regarding ${cleanDeficit}.`;
       }
   }
 
@@ -129,7 +206,7 @@ const generateNarrative = (selections: SelectionUnit[], vitals: SessionVitals, c
   if (vitals.pain) {
       const p = parseInt(vitals.pain);
       if (p > 3) {
-           tolerance = `Patient tolerated session with fair endurance; pain reported at ${p}/10.`;
+           tolerance = `Patient tolerated session with fair endurance; pain reported at ${p}/10 requiring frequent rest breaks.`;
       } else {
            tolerance = `Patient tolerated session well with pain controlled at ${p}/10.`;
       }
@@ -177,7 +254,7 @@ export default function App() {
   // Matrix State (Cues)
   const [cueType, setCueType] = useState<string>('Verbal');
   const [cueLevel, setCueLevel] = useState<string>('Min');
-  const [cueFocus, setCueFocus] = useState<string>('Safety');
+  const [cueFocuses, setCueFocuses] = useState<string[]>(['Safety']); // Multi-select for Focus
   const [addedCues, setAddedCues] = useState<string[]>([]);
   
   // Review State
@@ -233,6 +310,7 @@ export default function App() {
       setCustomDeficit('');
       setTempParams('');
       setAddedCues([]);
+      setCueFocuses(['Safety']);
       setView('PHASE');
       setCopyFeedback("COPY TO CLIPBOARD");
       setActivePhase(null);
@@ -240,11 +318,21 @@ export default function App() {
       setCurrentActivity(CLINICAL_DATA.SELF_CARE); 
   };
 
+  const toggleCueFocus = (focus: string) => {
+      setCueFocuses(prev => {
+          if (prev.includes(focus)) return prev.filter(f => f !== focus);
+          return [...prev, focus];
+      });
+  };
+
   const handleAddCue = () => {
-      const cueString = `${cueLevel} ${cueType} (${cueFocus})`;
+      // Create string: "Min Verbal (Safety, Sequencing)"
+      const focusString = cueFocuses.join(", ");
+      const cueString = `${cueLevel} ${cueType} (${focusString})`;
       if (!addedCues.includes(cueString)) {
           setAddedCues(prev => [...prev, cueString]);
       }
+      // Reset focus slightly for workflow? No, keep stickiness for speed.
   };
 
   const removeCue = (cue: string) => {
@@ -284,6 +372,7 @@ export default function App() {
     setCustomDeficit('');
     setTempParams('');
     setAddedCues([]);
+    setCueFocuses(['Safety']);
     setView('SUBTASK');
   };
 
@@ -315,11 +404,10 @@ export default function App() {
   // --- Render Helpers ---
   
   const commonTileStyle = "bg-white border border-[#D1D5DB] rounded flex items-center justify-center text-center cursor-pointer hover:border-[#F9D71C] transition-colors shadow-sm text-[#1A1A1A] font-medium leading-tight";
-  const activeTileStyle = "bg-[#FFFBEB] border border-[#F9D71C] shadow-md font-bold text-black";
   
   // Compact Button Styles
   const btnBase = "py-2 px-1 text-xs border rounded transition-all truncate hover:bg-gray-50";
-  const btnActive = "bg-[#FFFBEB] border-[#F9D71C] font-bold shadow-sm";
+  const btnActive = "bg-[#FFFBEB] border-[#F9D71C] font-bold shadow-sm text-black";
 
   // CPT Categories to Hide
   const HIDDEN_CPTS = ['COGNITIVE', 'VISION', 'IADL', 'BALANCE', 'SENSORY', 'GAIT'];
@@ -488,7 +576,7 @@ export default function App() {
           </div>
         )}
 
-        {/* COMPACT MATRIX (UPDATED FOR MULTI-SELECT) */}
+        {/* COMPACT MATRIX (UPDATED) */}
         {view === 'MATRIX' && activeSubtask && (
           <div className="w-full max-w-4xl bg-white border border-[#F9D71C] rounded shadow-xl flex flex-col animate-in zoom-in-95 duration-150 overflow-hidden">
             
@@ -568,7 +656,7 @@ export default function App() {
                     
                     {/* Cue Builder */}
                     <div className="space-y-3 p-3 bg-white border border-gray-200 rounded">
-                        <div className="grid grid-cols-3 gap-2">
+                        <div className="grid grid-cols-2 gap-2">
                             <div>
                                 <label className="text-[10px] text-gray-500 block mb-1">LEVEL</label>
                                 <select className="w-full text-xs border rounded p-1" value={cueLevel} onChange={e => setCueLevel(e.target.value)}>
@@ -581,25 +669,27 @@ export default function App() {
                                     <option>Verbal</option><option>Visual</option><option>Tactile</option><option>Demo</option>
                                 </select>
                             </div>
-                            <div>
-                                <label className="text-[10px] text-gray-500 block mb-1">FOCUS</label>
-                                <select className="w-full text-xs border rounded p-1" value={cueFocus} onChange={e => setCueFocus(e.target.value)}>
-                                    <option>Safety</option>
-                                    <option>Sequencing</option>
-                                    <option>Technique</option>
-                                    <option>Balance</option>
-                                    <option>Insight</option>
-                                    <option>Attention</option>
-                                    <option>Initiation</option>
-                                    <option>Motor Planning</option>
-                                    <option>Problem Solving</option>
-                                    <option>Quality of Movement</option>
-                                </select>
+                        </div>
+                        
+                        {/* MULTI-SELECT FOCUS */}
+                        <div>
+                            <label className="text-[10px] text-gray-500 block mb-1">FOCUS (Select all that apply)</label>
+                            <div className="grid grid-cols-3 gap-1">
+                                {CUE_FOCUS_OPTIONS.map(f => (
+                                    <button
+                                        key={f}
+                                        onClick={() => toggleCueFocus(f)}
+                                        className={`text-[10px] px-1 py-1.5 rounded border ${cueFocuses.includes(f) ? 'bg-black text-white border-black font-bold' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'}`}
+                                    >
+                                        {f}
+                                    </button>
+                                ))}
                             </div>
                         </div>
+
                         <button 
                             onClick={handleAddCue}
-                            className="w-full py-1.5 bg-gray-100 hover:bg-gray-200 text-xs font-bold rounded border border-gray-300 transition-colors"
+                            className="w-full py-1.5 bg-gray-100 hover:bg-gray-200 text-xs font-bold rounded border border-gray-300 transition-colors mt-2"
                         >
                             ADD CUE +
                         </button>
